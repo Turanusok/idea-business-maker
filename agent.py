@@ -1,4 +1,5 @@
 import os
+import json
 from typing import TypedDict, Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -32,8 +33,16 @@ llm = ChatOpenAI(
     base_url="https://api.deepseek.com",
     temperature=0.4,
 )
-structured_llm = llm.with_structured_output(ClarifyResult)
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+
+
+def _extract_json(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text.rsplit("\n", 1)[0]
+    return json.loads(text)
 
 
 def clarify_idea(state: AgentState) -> AgentState:
@@ -42,16 +51,19 @@ def clarify_idea(state: AgentState) -> AgentState:
 
     prompt = f"""A user gave this business idea: "{state['raw_idea']}"
 
-Decide if it's specific enough to research. If not, set needs_clarification=True 
-and put a follow-up question in question_or_summary. If yes, set 
-needs_clarification=False and put a clean one-sentence summary in question_or_summary."""
+Decide if it's specific enough to research. If not, set needs_clarification=True
+and put a follow-up question in question_or_summary. If yes, set
+needs_clarification=False and put a clean one-sentence summary in question_or_summary.
 
-    result = structured_llm.invoke(prompt)
+Return your answer as a JSON object with keys "needs_clarification" (boolean) and "question_or_summary" (string). Return ONLY the JSON object, nothing else, no markdown formatting."""
 
-    if result.needs_clarification:
-        return {**state, "needs_clarification": True, "clarifying_question": result.question_or_summary}
+    response = llm.invoke(prompt).content.strip()
+    result = _extract_json(response)
+
+    if result.get("needs_clarification"):
+        return {**state, "needs_clarification": True, "clarifying_question": result.get("question_or_summary", "")}
     else:
-        return {**state, "needs_clarification": False, "idea_summary": result.question_or_summary}
+        return {**state, "needs_clarification": False, "idea_summary": result.get("question_or_summary", "")}
 
 
 def research_market(state: AgentState) -> AgentState:
