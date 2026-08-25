@@ -1,5 +1,4 @@
 import os
-import json
 from typing import TypedDict, Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -19,6 +18,7 @@ class AgentState(TypedDict):
     cost_estimate: Optional[str]
     roadmap: Optional[str]
     final_report: Optional[str]
+    clarify_rounds: int
 
 
 class ClarifyResult(BaseModel):
@@ -32,34 +32,26 @@ llm = ChatOpenAI(
     base_url="https://api.deepseek.com",
     temperature=0.4,
 )
+structured_llm = llm.with_structured_output(ClarifyResult)
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 
-def _extract_json(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text.rsplit("\n", 1)[0]
-    return json.loads(text)
-
-
 def clarify_idea(state: AgentState) -> AgentState:
-    prompt = f"""A user gave this business idea: "{state['raw_idea']}""
+    if state.get("clarify_rounds", 0) >= 1:
+        return {**state, "needs_clarification": False, "idea_summary": state["raw_idea"]}
+
+    prompt = f"""A user gave this business idea: "{state['raw_idea']}"
 
 Decide if it's specific enough to research. If not, set needs_clarification=True 
 and put a follow-up question in question_or_summary. If yes, set 
-needs_clarification=False and put a clean one-sentence summary in question_or_summary.
+needs_clarification=False and put a clean one-sentence summary in question_or_summary."""
 
-Return your answer as a JSON object with keys "needs_clarification" (boolean) and "question_or_summary" (string)."""
+    result = structured_llm.invoke(prompt)
 
-    response = llm.invoke(prompt).content.strip()
-    result = _extract_json(response)
-
-    if result.get("needs_clarification"):
-        return {**state, "needs_clarification": True, "clarifying_question": result.get("question_or_summary", "")}
+    if result.needs_clarification:
+        return {**state, "needs_clarification": True, "clarifying_question": result.question_or_summary}
     else:
-        return {**state, "needs_clarification": False, "idea_summary": result.get("question_or_summary", "")}
+        return {**state, "needs_clarification": False, "idea_summary": result.question_or_summary}
 
 
 def research_market(state: AgentState) -> AgentState:
@@ -119,7 +111,6 @@ advice like "do market research," say exactly what to do.
 
     roadmap = llm.invoke(prompt).content.strip()
     return {**state, "roadmap": roadmap}
-print("done")
 
 
 def format_output(state: AgentState) -> AgentState:
@@ -169,7 +160,7 @@ agent_graph = graph.compile()
 
 if __name__ == "__main__":
     a = input("Enter a business idea: ")
-    result = agent_graph.invoke({"raw_idea": a, "needs_clarification": False, "clarifying_question": None, "idea_summary": None, "market_research": None, "cost_estimate": None, "roadmap": None, "final_report": None})
+    result = agent_graph.invoke({"raw_idea": a, "needs_clarification": False, "clarifying_question": None, "idea_summary": None, "market_research": None, "cost_estimate": None, "roadmap": None, "final_report": None, "clarify_rounds": 0})
 
     if result["needs_clarification"]:
         print("Need more info:", result["clarifying_question"])
